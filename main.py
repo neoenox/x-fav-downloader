@@ -45,20 +45,31 @@ def setup_logging(out_dir):
     return log_path
 
 
+def launch_browser(p, headless=False):
+    """Real Chromeを優先（検出回避＋ログイン流用）。無ければ同梱Chromium。"""
+    args = ["--disable-blink-features=AutomationControlled", "--no-first-run", "--no-default-browser-check"]
+    try:
+        return p.chromium.launch(headless=headless, channel="chrome", args=args)
+    except Exception as e:
+        print(f"Real Chrome起動失敗、同梱Chromiumで継続: {e}")
+        return p.chromium.launch(headless=headless, args=args)
+
+
 def do_login(headless=False):
     """初回ログイン用。ブラウザを開くので手動でXにログインしてEnter。"""
     from playwright.sync_api import sync_playwright
 
     os.makedirs(AUTH_DIR, exist_ok=True)
-    print("=== 初回ログイン ===")
-    print("開いたブラウザでXにログインしてから、このコンソールでEnterを押してください。")
+    print("=== first login ===")
+    print("Browser opens. Log in to X manually, then press Enter here.")
+    print("If x.com/login shows error, use the address bar to go to x.com/ and log in there.")
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=headless)
+        browser = launch_browser(p, headless=False)
         ctx = browser.new_context(viewport={"width": 1280, "height": 900})
         page = ctx.new_page()
-        page.goto("https://x.com/login", wait_until="domcontentloaded")
+        page.goto("https://x.com/", wait_until="domcontentloaded")
         try:
-            input("ログイン完了後にEnter > ")
+            input("After login, press Enter > ")
         except KeyboardInterrupt:
             pass
         ctx.storage_state(path=STORAGE_STATE)
@@ -100,7 +111,7 @@ def fetch_likes(target_count, scroll_wait, max_empty, headless):
     urls = []
     seen = set()
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=headless)
+        browser = launch_browser(p, headless=headless)
         ctx = browser.new_context(
             storage_state=STORAGE_STATE if os.path.exists(STORAGE_STATE) else None,
             viewport={"width": 1280, "height": 1200},
