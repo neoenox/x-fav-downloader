@@ -1,39 +1,42 @@
 @echo off
-chcp 65001 >nul
+chcp 65001 >NUL
 set PYTHONUTF8=1
-cd /d %~dp0
+cd /d "%~dp0"
 
-where python >nul 2>nul
-if errorlevel 1 (
-  echo [ERROR] Pythonが見つかりません。Python 3.10+ をインストールしてください。
+where python >NUL 2>&1
+if %errorlevel% neq 0 (
+  echo [ERROR] Python not found. Please install Python 3.10+
   pause
   exit /b 1
 )
 
-if not exist .venv (
-  echo [INFO] venv作成中...
+if not exist ".venv" (
+  echo [INFO] Creating venv...
   python -m venv .venv
 )
-call .venv\Scripts\activate.bat
+call ".venv\Scripts\activate.bat"
 
-echo [INFO] パッケージ更新中...
+echo [INFO] Installing packages...
 python -m pip install -q --upgrade pip
 pip install -q -r requirements.txt
 
-echo [INFO] Chromium確認中...
-python -m playwright install chromium --with-deps 2>nul
-if errorlevel 1 (
-  python -m playwright install chromium
+echo [INFO] Checking Chromium...
+python -m playwright install chromium
+if %errorlevel% neq 0 (
+  echo [WARN] playwright install failed. Continuing...
 )
 
-if "%1"=="login" (
+if /i "%~1"=="login" (
   python main.py --login
-) else if "%1"=="dry" (
-  python main.py --dry-run --count 5
-) else (
-  python main.py %*
+  goto done
 )
+if /i "%~1"=="dry" (
+  python main.py --dry-run --count 5
+  goto done
+)
+python main.py %*
 
+:done
 echo.
-echo [DONE] 終了しました。
+echo [DONE] Finished.
 pause
