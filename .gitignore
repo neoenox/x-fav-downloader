@@ -1,0 +1,10 @@
+.venv/
+auth/
+downloads/_tmp_*
+downloads/*.jpg
+downloads/*.jpeg
+downloads/*.png
+downloads/*.webp
+downloads/*.mp4
+logs/
+__pycache__/

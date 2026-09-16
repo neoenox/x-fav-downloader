@@ -1,0 +1,9 @@
+{
+  "target_count": 100,
+  "scroll_wait_sec": 2,
+  "max_empty_scrolls": 5,
+  "retry": 3,
+  "headless": false,
+  "out_dir": "downloads",
+  "likes_url": "https://x.com/i/likes"
+}
