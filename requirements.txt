@@ -1,2 +1,2 @@
+gallery-dl>=1.32
 playwright>=1.40
-yt-dlp>=2024.8.6

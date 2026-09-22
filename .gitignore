@@ -1,6 +1,8 @@
 .venv/
 auth/
 downloads/_tmp_*
+downloads/_staging/
+downloads/
 downloads/*.jpg
 downloads/*.jpeg
 downloads/*.png
