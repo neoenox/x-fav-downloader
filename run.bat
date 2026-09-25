@@ -20,12 +20,13 @@ echo [INFO] Installing packages...
 python -m pip install -q --upgrade pip
 pip install -q -r requirements.txt
 
+echo [INFO] Ensuring Chromium is available for automatic login...
+python -m playwright install chromium
+if %errorlevel% neq 0 (
+  echo [WARN] playwright install failed. Login may not be available.
+)
+
 if /i "%~1"=="login" (
-  echo [INFO] Checking Chromium for login...
-  python -m playwright install chromium
-  if %errorlevel% neq 0 (
-    echo [WARN] playwright install failed. Continuing...
-  )
   python main.py --login
   goto done
 )
