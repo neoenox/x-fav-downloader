@@ -184,7 +184,13 @@ def import_cookies_txt(path):
     with open(path, encoding="utf-8", errors="ignore") as f:
         for line in f:
             line = line.strip()
-            if not line or line.startswith("#"):
+            if not line:
+                continue
+            http_only = False
+            if line.startswith("#HttpOnly_"):
+                line = line[len("#HttpOnly_"):]
+                http_only = True
+            elif line.startswith("#"):
                 continue
             parts = line.split("\t")
             if len(parts) < 7:
@@ -202,7 +208,7 @@ def import_cookies_txt(path):
                 "domain": domain,
                 "path": cpath or "/",
                 "expires": exp if exp > 0 else 2147483647,
-                "httpOnly": False,
+                "httpOnly": http_only,
                 "secure": secure.upper() == "TRUE",
                 "sameSite": "Lax",
             })
