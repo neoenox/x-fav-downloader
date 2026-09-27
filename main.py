@@ -296,7 +296,7 @@ def rename_to_spec(tmp_path, out_dir, username, datestr, tweet_id, idx):
         new_path = f"{base}_{n}{extension}"
         n += 1
     os.rename(tmp_path, new_path)
-    return new_path, new_name
+    return new_path, os.path.basename(new_path)
 
 
 def process_staging(out_dir, staging_dir, target):
