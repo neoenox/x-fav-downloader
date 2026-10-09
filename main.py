@@ -13,6 +13,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -263,26 +264,119 @@ def run_gallery_dl(likes_url, target, staging_dir, dry_run=False):
     return True, out
 
 
+def _atomic_json(path, value):
+    """Never truncate a committed index or journal while writing a replacement."""
+    folder = os.path.dirname(os.path.abspath(path))
+    fd, temp = tempfile.mkstemp(prefix=".ingest-write-", suffix=".tmp", dir=folder)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(value, f, ensure_ascii=False, indent=2)
+            f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp, path)
+    finally:
+        if os.path.exists(temp):
+            os.unlink(temp)
+
+
 def load_seen(out_dir):
-    p = os.path.join(out_dir, "seen.json")
-    if os.path.exists(p):
-        try:
-            with open(p, encoding="utf-8") as f:
-                return set(json.load(f)), p
-        except Exception:
-            return set(), p
-    return set(), p
+    path = os.path.join(out_dir, "seen.json")
+    if not os.path.exists(path):
+        return set(), path
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(
+            f"{path} を読めません。重複取り込みを防ぐため停止します。"
+            "バックアップから履歴を復旧してください。"
+        ) from exc
+    if not isinstance(data, list) or any(not isinstance(x, str) for x in data):
+        raise RuntimeError(f"{path} の形式が不正です。履歴を確認してください。")
+    return set(data), path
 
 
 def save_seen(seen_set, path):
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(sorted(seen_set), f, ensure_ascii=False, indent=2)
+    _atomic_json(path, sorted(seen_set))
 
 
 def append_meta(out_dir, record):
-    p = os.path.join(out_dir, "metadata.jsonl")
-    with open(p, "a", encoding="utf-8") as f:
+    path = os.path.join(out_dir, "metadata.jsonl")
+    with open(path, "a", encoding="utf-8") as f:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+
+
+def _metadata_ids(out_dir):
+    path = os.path.join(out_dir, "metadata.jsonl")
+    result = set()
+    if not os.path.exists(path):
+        return result
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line_no, line in enumerate(f, 1):
+                if not line.strip():
+                    continue
+                record = json.loads(line)
+                if not isinstance(record, dict) or not isinstance(
+                    record.get("tweet_id"), str
+                ):
+                    raise ValueError(f"line {line_no}: invalid record")
+                result.add(record["tweet_id"])
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(
+            f"{path} が壊れています。上書きせず停止します。記録を復旧してください。"
+        ) from exc
+    return result
+
+
+def _planned_moves(media_paths, out_dir, author, datestr, tid):
+    clean_author = re.sub(r"[^0-9A-Za-z_]+", "_", str(author or "unknown"))[:30]
+    reserved = set()
+    moves = []
+    for idx, source in enumerate(media_paths):
+        ext = os.path.splitext(source)[1].lower().lstrip(".") or "bin"
+        name = f"{datestr}_{tid}_{idx}_{clean_author}.{ext}"
+        root, extension = os.path.splitext(name)
+        candidate = os.path.join(out_dir, name)
+        n = 1
+        while candidate in reserved or os.path.exists(candidate):
+            candidate = os.path.join(out_dir, f"{root}_{n}{extension}")
+            n += 1
+        reserved.add(candidate)
+        moves.append({"source": source, "destination": candidate})
+    return moves
+
+
+def _complete_ingest(out_dir, journal, seen, seen_path, metadata_ids):
+    """Replay a durable per-tweet plan after a process stop at any commit step."""
+    with open(journal, encoding="utf-8") as f:
+        plan = json.load(f)
+    tid, moves, record = plan["tweet_id"], plan["moves"], plan["record"]
+    if not isinstance(tid, str) or not tid.isdecimal() or not isinstance(moves, list):
+        raise RuntimeError(f"不正な取り込み記録です: {journal}")
+    for move in moves:
+        source, destination = move["source"], move["destination"]
+        if os.path.exists(source):
+            if os.path.exists(destination):
+                raise RuntimeError(f"両方にファイルがあります。手動確認が必要です: {destination}")
+            os.rename(source, destination)
+        elif not os.path.isfile(destination):
+            raise RuntimeError(f"取り込み中のファイルが見つかりません: {destination}")
+    if tid not in metadata_ids:
+        append_meta(out_dir, record)
+        metadata_ids.add(tid)
+    if tid not in seen:
+        updated = seen | {tid}
+        save_seen(updated, seen_path)
+        seen.add(tid)
+    for move in moves:
+        sidecar = move["source"] + ".json"
+        if os.path.exists(sidecar):
+            os.unlink(sidecar)
+    os.unlink(journal)
 
 
 def rename_to_spec(tmp_path, out_dir, username, datestr, tweet_id, idx):
@@ -300,86 +394,90 @@ def rename_to_spec(tmp_path, out_dir, username, datestr, tweet_id, idx):
 
 
 def process_staging(out_dir, staging_dir, target):
-    """stagingのDL済みファイルを仕様名にリネームして取り込む。"""
-    seen_set, seen_path = load_seen(out_dir)
+    """Resume interrupted imports before processing any newly staged tweet."""
+    seen, seen_path = load_seen(out_dir)
+    metadata_ids = _metadata_ids(out_dir)
+
+    # A completed metadata append may precede the final seen-index update.
+    if metadata_ids - seen:
+        save_seen(seen | metadata_ids, seen_path)
+        seen.update(metadata_ids)
+
+    for journal in sorted(glob.glob(os.path.join(out_dir, ".ingest-*.json"))):
+        _complete_ingest(out_dir, journal, seen, seen_path, metadata_ids)
+
     ok, skip = 0, 0
     paths = sorted(glob.glob(os.path.join(staging_dir, "**", "*"), recursive=True))
-    # gallery-dl emits one file per media item (e.g. 123_1.jpg, 123_2.jpg).
-    # Group by tweet before consulting/updating seen.json so later photos in
-    # the same post are not mistaken for already processed posts.
     media_by_tweet = {}
     for path in paths:
         if os.path.isdir(path) or path.endswith(".json"):
             continue
-        m = re.match(r"^(\d+)_\d+\.([A-Za-z0-9]+)$", os.path.basename(path))
-        if not m:
-            continue
-        tid = m.group(1)
-        media_by_tweet.setdefault(tid, []).append(path)
+        match = re.match(r"^(\d+)_\d+\.([A-Za-z0-9]+)$", os.path.basename(path))
+        if match:
+            media_by_tweet.setdefault(match.group(1), []).append(path)
 
     for tid, media_paths in media_by_tweet.items():
-        media_paths.sort(key=lambda p: int(re.match(r"^\d+_(\d+)\.", os.path.basename(p)).group(1)))
+        media_paths.sort(
+            key=lambda p: int(re.match(r"^\d+_(\d+)\.", os.path.basename(p)).group(1))
+        )
+        if tid in seen:
+            for source in media_paths:
+                os.unlink(source)
+                if os.path.exists(source + ".json"):
+                    os.unlink(source + ".json")
+            skip += 1
+            continue
         metas = []
-        for path in media_paths:
-            meta_path = path + ".json"
-            meta = {}
+        for source in media_paths:
+            meta_path = source + ".json"
             if os.path.exists(meta_path):
                 try:
                     with open(meta_path, encoding="utf-8") as f:
-                        meta = json.load(f)
-                except Exception:
-                    pass
-                try:
-                    os.remove(meta_path)
-                except Exception:
-                    pass
-            metas.append(meta)
-        meta = next((item for item in metas if item), {})
-        if tid in seen_set:
-            for path in media_paths:
-                try:
-                    os.remove(path)
-                except Exception:
-                    pass
-            skip += 1
-            continue
-        author = (meta.get("author") or {}).get("name", "") if isinstance(meta.get("author"), dict) else ""
+                        metas.append(json.load(f))
+                except (OSError, ValueError):
+                    metas.append({})
+            else:
+                metas.append({})
+        meta = next((m for m in metas if isinstance(m, dict) and m), {})
+        author = (meta.get("author") or {}).get("name", "") if isinstance(
+            meta.get("author"), dict
+        ) else ""
         date_s = meta.get("date", "") or ""
         try:
-            datestr = datetime.datetime.strptime(date_s, "%Y-%m-%d %H:%M:%S").strftime("%Y%m%d")
-        except Exception:
+            datestr = datetime.datetime.strptime(
+                date_s, "%Y-%m-%d %H:%M:%S"
+            ).strftime("%Y%m%d")
+        except (ValueError, TypeError):
             datestr = datetime.datetime.now().strftime("%Y%m%d")
-        text = (meta.get("content") or "")[:200]
-        mtype = meta.get("type", "")
-        media_type = "video" if mtype == "video" else "image"
-        saved = []
-        for idx, path in enumerate(media_paths):
-            _, new_name = rename_to_spec(path, out_dir, author, datestr, tid, idx)
-            saved.append(new_name)
-        append_meta(out_dir, {
+        moves = _planned_moves(media_paths, out_dir, author, datestr, tid)
+        record = {
             "tweet_url": f"https://x.com/i/status/{tid}",
             "tweet_id": tid,
             "username": author,
             "created_at": date_s,
-            "text": text,
+            "text": (meta.get("content") or "")[:200],
             "media_type": "video" if any(
-                item.get("type") == "video" for item in metas
-            ) or media_type == "video" else "image",
-            "saved_files": saved,
+                isinstance(m, dict) and m.get("type") == "video" for m in metas
+            ) else "image",
+            "saved_files": [os.path.basename(m["destination"]) for m in moves],
             "fetched_at": datetime.datetime.now().isoformat(timespec="seconds"),
-        })
-        seen_set.add(tid)
+        }
+        journal = os.path.join(out_dir, f".ingest-{tid}.json")
+        _atomic_json(journal, {"tweet_id": tid, "moves": moves, "record": record})
+        _complete_ingest(out_dir, journal, seen, seen_path, metadata_ids)
         ok += 1
-        print(f"  保存: {', '.join(saved)}")
-    save_seen(seen_set, seen_path)
-    # 空になった下位ディレクトリ掃除
+        print(f"  保存: {', '.join(record['saved_files'])}")
+
     for path in sorted(paths, reverse=True):
         if os.path.isdir(path):
             try:
                 os.rmdir(path)
-            except Exception:
+            except OSError:
                 pass
-    print(f"走査{target}件: 保存{ok} / seenスキップ{skip} / メディアなし等{max(0, target - ok - skip)}")
+    print(
+        f"走査{target}件: 保存{ok} / seenスキップ{skip} / "
+        f"メディアなし等{max(0, target - ok - skip)}"
+    )
     return ok
 
 
