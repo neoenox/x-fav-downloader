@@ -13,6 +13,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -212,20 +213,41 @@ def import_cookies_txt(path):
                 "secure": secure.upper() == "TRUE",
                 "sameSite": "Lax",
             })
-    # x.com系だけに絞る（他サイト混入防止）
-    pw_cookies = [c for c in pw_cookies
-                  if "x.com" in c["domain"] or "twitter.com" in c["domain"]]
+    # Only real X/Twitter domains and their subdomains are acceptable.
+    # A substring check incorrectly accepted attacker-controlled lookalikes.
+    trusted = ("x.com", "twitter.com")
+    pw_cookies = [
+        c for c in pw_cookies
+        if any(
+            c["domain"].lower().lstrip(".") == base
+            or c["domain"].lower().lstrip(".").endswith("." + base)
+            for base in trusted
+        )
+    ]
     if not pw_cookies:
         print("!! x.com系クッキーが見つかりません。x.comを開いた状態で出力してください。")
         return False
-    os.makedirs(AUTH_DIR, exist_ok=True)
-    with open(STORAGE_STATE, "w", encoding="utf-8") as f:
-        json.dump({"cookies": pw_cookies, "origins": []}, f, ensure_ascii=False, indent=2)
-    print(f"保存: {STORAGE_STATE} ({len(pw_cookies)} cookies)")
     names = {c["name"] for c in pw_cookies}
     if "auth_token" not in names:
         print("!! auth_tokenが見つかりません。Xにログインした状態でcookies.txtを出力してください。")
         return False
+
+    # Validate BEFORE replacing the old credentials. An incomplete cookie file
+    # must never clobber a previously working session.
+    os.makedirs(AUTH_DIR, exist_ok=True)
+    fd, temp_path = tempfile.mkstemp(
+        prefix=".storage-state-", suffix=".tmp", dir=AUTH_DIR
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump({"cookies": pw_cookies, "origins": []}, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp_path, STORAGE_STATE)
+    finally:
+        if os.path.exists(temp_path):
+            os.unlink(temp_path)
+    print(f"保存: {STORAGE_STATE} ({len(pw_cookies)} cookies)")
     print("auth_token確認OK")
     export_cookies_txt()
     return True
