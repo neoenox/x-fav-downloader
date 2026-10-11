@@ -31,7 +31,7 @@ class CookieImportSafetyTest(unittest.TestCase):
             original = b'{"cookies":[{"name":"auth_token","value":"previous"}],"origins":[]}'
             existing.write_bytes(original)
             result, state = self._import(
-                root, ".x.com\\tTRUE\\t/\\tTRUE\\t2147483647\\tct0\\tcsrf\\n"
+                root, ".x.com\tTRUE\t/\tTRUE\t2147483647\tct0\tcsrf\n"
             )
             self.assertFalse(result)
             self.assertEqual(state.read_bytes(), original)
@@ -41,8 +41,8 @@ class CookieImportSafetyTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             result, state = self._import(
                 Path(temp),
-                "x.com.evil.example\\tTRUE\\t/\\tTRUE\\t2147483647\\tauth_token\\tfake\\n"
-                "notx.com\\tTRUE\\t/\\tTRUE\\t2147483647\\tauth_token\\tfake\\n",
+                "x.com.evil.example\tTRUE\t/\tTRUE\t2147483647\tauth_token\tfake\n"
+                "notx.com\tTRUE\t/\tTRUE\t2147483647\tauth_token\tfake\n",
             )
             self.assertFalse(result)
             self.assertFalse(state.exists())
@@ -53,8 +53,8 @@ class CookieImportSafetyTest(unittest.TestCase):
                 root = Path(temp)
                 result, state = self._import(
                     root,
-                    f"{domain}\\tTRUE\\t/\\tTRUE\\t2147483647\\tauth_token\\tvalid\\n"
-                    "evil.x.com.invalid\\tTRUE\\t/\\tTRUE\\t2147483647\\tct0\\tbad\\n",
+                    f"{domain}\tTRUE\t/\tTRUE\t2147483647\tauth_token\tvalid\n"
+                    "evil.x.com.invalid\tTRUE\t/\tTRUE\t2147483647\tct0\tbad\n",
                 )
                 self.assertTrue(result)
                 cookies = json.loads(state.read_text(encoding="utf-8"))["cookies"]
