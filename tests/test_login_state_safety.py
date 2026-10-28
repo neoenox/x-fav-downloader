@@ -55,6 +55,18 @@ class LoginStateSafetyTest(unittest.TestCase):
             self.assertEqual(state.read_bytes(), b"old")
             self.assertEqual(list(Path(tmp).glob(".login-state-*")), [])
 
+    def test_fsync_failure_preserves_existing_state_and_cleans_temp(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / "storage_state.json"
+            original = b'{"cookies":[{"name":"auth_token","value":"old"}],"origins":[]}'
+            state.write_bytes(original)
+            data = {"cookies": [{"name": "auth_token", "value": "new"}], "origins": []}
+            with mock.patch.object(main.os, "fsync", side_effect=OSError("disk sync failed")):
+                with self.assertRaises(OSError):
+                    main.save_authenticated_storage_state(data, str(state))
+            self.assertEqual(state.read_bytes(), original)
+            self.assertEqual(list(Path(tmp).glob(".login-state-*")), [])
+
     def test_guest_browser_login_keeps_previous_session(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
