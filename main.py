@@ -184,8 +184,10 @@ def import_cookies_txt(path):
     pw_cookies = []
     with open(path, encoding="utf-8", errors="ignore") as f:
         for line in f:
-            line = line.strip()
-            if not line:
+            # Keep trailing tabs so a cookie with an empty value is parsed
+            # and rejected rather than silently treated as a valid session.
+            line = line.rstrip("\r\n")
+            if not line.strip():
                 continue
             http_only = False
             if line.startswith("#HttpOnly_"):
@@ -227,9 +229,17 @@ def import_cookies_txt(path):
     if not pw_cookies:
         print("!! x.com系クッキーが見つかりません。x.comを開いた状態で出力してください。")
         return False
-    names = {c["name"] for c in pw_cookies}
-    if "auth_token" not in names:
-        print("!! auth_tokenが見つかりません。Xにログインした状態でcookies.txtを出力してください。")
+    # An expired or empty auth_token cannot authenticate. Reject it before
+    # replacing a previously valid storage_state.json.
+    now = time.time()
+    if not any(
+        c["name"] == "auth_token"
+        and isinstance(c["value"], str)
+        and bool(c["value"].strip())
+        and c["expires"] > now
+        for c in pw_cookies
+    ):
+        print("!! 有効なauth_tokenが見つかりません。Xにログインした状態でcookies.txtを出力してください。")
         return False
 
     # Validate BEFORE replacing the old credentials. An incomplete cookie file
