@@ -10,9 +10,9 @@ import glob
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
+import tempfile
 import time
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -82,6 +82,34 @@ def looks_like_auth_error(output):
     return any(k in o for k in keys)
 
 
+def save_authenticated_storage_state(state, path=None):
+    """Persist a verified browser session without destroying the previous one."""
+    if path is None:
+        path = STORAGE_STATE
+    cookies = state.get("cookies") if isinstance(state, dict) else None
+    if not isinstance(cookies, list) or not any(
+        isinstance(cookie, dict)
+        and cookie.get("name") == "auth_token"
+        and isinstance(cookie.get("value"), str)
+        and bool(cookie["value"].strip())
+        for cookie in cookies
+    ):
+        return False
+    folder = os.path.dirname(os.path.abspath(path))
+    os.makedirs(folder, exist_ok=True)
+    fd, temp_path = tempfile.mkstemp(prefix=".login-state-", suffix=".tmp", dir=folder)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp_path, path)
+    finally:
+        if os.path.exists(temp_path):
+            os.unlink(temp_path)
+    return True
+
+
 def do_login(headless=False):
     """初回ログイン用。ブラウザを開くので手動でXにログインしてEnter。
     注意: 「Googleでログイン」ボタンは自動ブラウザでは白画面になるため使わない。
@@ -124,28 +152,13 @@ def do_login(headless=False):
             input("ログイン完了後にEnter > ")
         except KeyboardInterrupt:
             pass
-        # 既存の正規ログインをゲスト上書きで壊さないようバックアップ
-        if os.path.exists(STORAGE_STATE):
-            try:
-                bak = STORAGE_STATE + ".bak"
-                with open(STORAGE_STATE, encoding="utf-8") as f:
-                    old = json.load(f)
-                old_names = {c.get("name") for c in old.get("cookies", [])}
-                if "auth_token" in old_names:
-                    shutil.copyfile(STORAGE_STATE, bak)
-                    print(f"既存の有効ログインをバックアップ: {bak}")
-            except Exception:
-                pass
-        ctx.storage_state(path=STORAGE_STATE)
-        # ログイン検証
+        # Validate the new browser state before touching existing credentials.
+        # A failed/guest login must leave the previous authenticated state intact.
         try:
-            with open(STORAGE_STATE, encoding="utf-8") as f:
-                state = json.load(f)
-            names = {c.get("name") for c in state.get("cookies", [])}
-        except Exception:
-            names = set()
-        ctx.close()
-    if "auth_token" in names:
+            saved = save_authenticated_storage_state(ctx.storage_state())
+        finally:
+            ctx.close()
+    if saved:
         print(f"保存しました: {STORAGE_STATE} (auth_token確認OK)")
         export_cookies_txt()
     else:
