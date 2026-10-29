@@ -61,5 +61,47 @@ class CookieImportSafetyTest(unittest.TestCase):
                 self.assertEqual([cookie["domain"] for cookie in cookies], [domain])
 
 
+    def test_expired_auth_token_preserves_existing_session(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            auth = root / "auth"
+            auth.mkdir()
+            existing = auth / "storage_state.json"
+            original = b'{"cookies":[{"name":"auth_token","value":"previous"}],"origins":[]}'
+            existing.write_bytes(original)
+            result, state = self._import(
+                root,
+                ".x.com\\tTRUE\\t/\\tTRUE\\t1\\tauth_token\\texpired\\n",
+            )
+            self.assertFalse(result)
+            self.assertEqual(state.read_bytes(), original)
+            self.assertFalse(list(auth.glob(".storage-state-*")))
+
+    def test_empty_auth_token_preserves_existing_session(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            auth = root / "auth"
+            auth.mkdir()
+            existing = auth / "storage_state.json"
+            original = b'{"cookies":[{"name":"auth_token","value":"previous"}],"origins":[]}'
+            existing.write_bytes(original)
+            result, state = self._import(
+                root,
+                ".x.com\\tTRUE\\t/\\tTRUE\\t2147483647\\tauth_token\\t\\n",
+            )
+            self.assertFalse(result)
+            self.assertEqual(state.read_bytes(), original)
+
+    def test_session_cookie_with_zero_expiry_is_accepted(self):
+        with tempfile.TemporaryDirectory() as temp:
+            result, state = self._import(
+                Path(temp),
+                ".x.com\\tTRUE\\t/\\tTRUE\\t0\\tauth_token\\tvalid\\n",
+            )
+            self.assertTrue(result)
+            cookies = json.loads(state.read_text(encoding="utf-8"))["cookies"]
+            self.assertEqual(cookies[0]["value"], "valid")
+
+
 if __name__ == "__main__":
     unittest.main()
