@@ -91,7 +91,7 @@ def save_authenticated_storage_state(state, path=None):
         isinstance(cookie, dict)
         and cookie.get("name") == "auth_token"
         and isinstance(cookie.get("value"), str)
-        and bool(cookie["value"])
+        and bool(cookie["value"].strip())
         for cookie in cookies
     ):
         return False
