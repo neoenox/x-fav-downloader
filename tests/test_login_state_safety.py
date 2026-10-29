@@ -31,6 +31,7 @@ class LoginStateSafetyTest(unittest.TestCase):
                 None,
                 {"cookies": "invalid"},
                 {"cookies": [{"name": "auth_token", "value": ""}]},
+                {"cookies": [{"name": "auth_token", "value": "  \t  "}]},
             ):
                 self.assertFalse(main.save_authenticated_storage_state(invalid, str(state)))
                 self.assertEqual(state.read_bytes(), b"old")
